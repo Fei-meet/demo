@@ -157,7 +157,7 @@ public class MyController {
             ProducerRecord<String, String> record = new ProducerRecord<>(topicName, data);
             // 同步发送消息，并等待响应
             RecordMetadata metadata = producer.send(record).get();
-            return ResponseEntity.ok(String.format("Message sent to topic %s partition %s with offset %s",
+            return ResponseEntity.ok(String.format("Message sent to topic %s: partition: %s with offset: %s",
                     metadata.topic(), metadata.partition(), metadata.offset()));
         } catch (Exception e) {
             // 处理发送消息时可能发生的异常
@@ -184,6 +184,8 @@ public class MyController {
         write_props.put("group.id", kafkaProperties.getGroupId());
         write_props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
         write_props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+        StringBuilder responseBuilder = new StringBuilder();
+
         // 创建消费者
         try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(read_props)) {
             consumer.subscribe(Collections.singletonList(readTopic));
@@ -192,15 +194,23 @@ public class MyController {
             try (KafkaProducer<String, String> producer = new KafkaProducer<>(write_props)) {
                 // 从readTopic读取数据
                 ConsumerRecords<String, String> records = consumer.poll(Duration.ofSeconds(10));
+                if (records.isEmpty()) {
+                    return ResponseEntity.ok("No messages to transform from " + readTopic);
+                }
                 records.forEach(record -> {
                     // 转换数据为大写
-                    String transformedData = record.value().toUpperCase();
+                    String originalData = record.value();
+                    String transformedData = originalData.toUpperCase();
                     // 写入到writeTopic
-//                    System.out.println(transformedData);
                     producer.send(new ProducerRecord<>(writeTopic, transformedData));
+
+                    // 添加转换详情到响应构建器
+                    responseBuilder.append(String.format("Value %s from readTopic: %s has transformed into %s to writeTopic: %s.%n",
+                            originalData, readTopic, transformedData, writeTopic));
                 });
 
-                return ResponseEntity.ok("Transformed and sent messages from " + readTopic + " to " + writeTopic);
+                // 返回所有转换的详情
+                return ResponseEntity.ok(responseBuilder.toString());
             } // 自动关闭生产者
         } catch (Exception e) {
             // 异常处理
