@@ -1,5 +1,6 @@
 package com.example.demo;
 
+import com.google.gson.Gson;
 import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
@@ -13,6 +14,12 @@ import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.springframework.web.bind.annotation.*;
 
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.Map;
 import java.util.Properties;
 import java.time.Duration;
 import java.util.Collections;
@@ -111,33 +118,33 @@ public class MyController {
         KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props);
         consumer.subscribe(Collections.singletonList(topicName));
 
-        HashMap<String, Double> currentSymbolValueMap = new HashMap<>();
-        String[] symbols = {"AAPL", "MSFT", "GOOG", "AMZN", "TSLA"};
-        for (String symbol : symbols) {
-            currentSymbolValueMap.put(symbol, Double.NaN);
+//        HashMap<String, Double> currentSymbolValueMap = new HashMap<>();
+//        String[] symbols = {"AAPL", "MSFT", "GOOG", "AMZN", "TSLA", "s2511180"};
+//        for (String symbol : symbols) {
+//            currentSymbolValueMap.put(symbol, Double.NaN);
+//        }
+        StringBuilder builder = new StringBuilder();
+        ConsumerRecords<String, String> records = consumer.poll(Duration.ofSeconds(10));
+
+        for (ConsumerRecord<String, String> record : records) {
+            builder.append(String.format("[%s] Key: %s, Value: %s, partition: %s,offset: %s,timestamp: %s%n",
+                    record.topic(), record.key(), record.value(),
+                    record.partition(), record.offset(), record.timestamp()));
         }
 
-        StringBuilder builder = new StringBuilder();
-        int iteration = 0;
-        try {
-            while (iteration < 100) {
-                ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(100));
-                for (ConsumerRecord<String, String> record : records) {
-                    if (currentSymbolValueMap.containsKey(record.key())) {
-                        currentSymbolValueMap.put(record.key(), Double.parseDouble(record.value()));
-                        builder.append(String.format("[%s] %s: %s %s %s %s%n",
-                                record.topic(), record.key(), record.value(),
-                                record.partition(), record.offset(), record.timestamp()));
-                    } else {
-                        builder.append(String.format("The key is: %s, value is: %s %n",
-                                record.key(), record.value()));
-                    }
-                }
-                iteration++;
-            }
-        } finally {
-            consumer.close(); // 确保在退出循环时关闭消费者
-        }
+//        for (ConsumerRecord<String, String> record : records) {
+//            if (currentSymbolValueMap.containsKey(record.key())) {
+//                currentSymbolValueMap.put(record.key(), Double.parseDouble(record.value()));
+//                builder.append(String.format("[%s] %s: %s %s %s %s%n",
+//                        record.topic(), record.key(), record.value(),
+//                        record.partition(), record.offset(), record.timestamp()));
+//            } else {
+//                builder.append(String.format("[%s] %s: %s %s %s %s%n",
+//                        record.topic(), record.key(), record.value(),
+//                        record.partition(), record.offset(), record.timestamp()));
+//                    }
+//                }
+        consumer.close(); // 确保在退出循环时关闭消费者
 
         return ResponseEntity.ok(builder.toString());
     }
@@ -154,7 +161,7 @@ public class MyController {
         props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
 
         try (KafkaProducer<String, String> producer = new KafkaProducer<>(props)) {
-            ProducerRecord<String, String> record = new ProducerRecord<>(topicName, data);
+            ProducerRecord<String, String> record = new ProducerRecord<>(topicName,"s2511180",data);
             // 同步发送消息，并等待响应
             RecordMetadata metadata = producer.send(record).get();
             return ResponseEntity.ok(String.format("Message sent to topic %s: partition: %s with offset: %s",
@@ -219,6 +226,135 @@ public class MyController {
 
 }
 
+    @PostMapping("store/{readTopic}/{writeTopic}")
+    public ResponseEntity<String> storeFromPost(@PathVariable String readTopic, @PathVariable String writeTopic,@RequestBody KafkaPropertiesDTO kafkaProperties) {
+        Properties read_props = new Properties();
+        read_props.put("bootstrap.servers", kafkaProperties.getBootstrapServers());
+        read_props.put("security.protocol", kafkaProperties.getSecurityProtocol());
+        read_props.put("sasl.jaas.config", kafkaProperties.getSaslJaasConfig());
+        read_props.put("sasl.mechanism", kafkaProperties.getSaslMechanism());
+        read_props.put("group.id", kafkaProperties.getGroupId());
+        read_props.put("key.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
+        read_props.put("value.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
+
+        Properties write_props = new Properties();
+        write_props.put("bootstrap.servers", kafkaProperties.getBootstrapServers());
+        write_props.put("security.protocol", kafkaProperties.getSecurityProtocol());
+        write_props.put("sasl.jaas.config", kafkaProperties.getSaslJaasConfig());
+        write_props.put("sasl.mechanism", kafkaProperties.getSaslMechanism());
+        write_props.put("group.id", kafkaProperties.getGroupId());
+        write_props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+        write_props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+        StringBuilder responseBuilder = new StringBuilder();
+
+        // 创建消费者
+        try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(read_props)) {
+            consumer.subscribe(Collections.singletonList(readTopic));
+
+            try (KafkaProducer<String, String> producer = new KafkaProducer<>(write_props)) {
+                ConsumerRecords<String, String> records = consumer.poll(Duration.ofSeconds(10));
+                if (records.isEmpty()) {
+                    return ResponseEntity.ok("No messages to transform from " + readTopic);
+                }
+
+                Gson gson = new Gson();
+                records.forEach(record -> {
+                    String dataFromTopic = record.value();
+
+                    // 构建JSON请求体
+                    Map<String, String> requestBodyMap = new HashMap<>();
+                    requestBodyMap.put("uid", "s2511180");
+                    requestBodyMap.put("datasetName", "ACP_CW2");
+                    requestBodyMap.put("data", dataFromTopic);
+                    String jsonRequestBody = gson.toJson(requestBodyMap);
+
+                    String baseUrl = kafkaProperties.getStorageServer(); // 确保KafkaPropertiesDTO有getBaseUrl()方法
+                    String requestUrl = baseUrl + "/write/blob";
+
+                    // 发送POST请求并处理响应
+                    try {
+                        URL url = new URL(requestUrl);
+                        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                        conn.setRequestMethod("POST");
+                        conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
+                        conn.setDoOutput(true);
+
+                        try(OutputStream os = conn.getOutputStream()) {
+                            byte[] input = jsonRequestBody.getBytes("utf-8");
+                            os.write(input, 0, input.length);
+                        }
+
+                        // 读取响应
+                        try(BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream(), "utf-8"))) {
+                            StringBuilder response = new StringBuilder();
+                            String responseLine;
+                            while ((responseLine = br.readLine()) != null) {
+                                response.append(responseLine.trim());
+                            }
+                            String responseUUID = response.toString();
+
+                            // 将响应UUID写入writeTopic
+                            producer.send(new ProducerRecord<>(writeTopic, responseUUID));
+                        }
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                    }
+                });
+
+                return ResponseEntity.ok("Data processed and stored.");
+            }
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body("Error during data processing: " + e.getMessage());
+        }
+
+    }
+
+    @PostMapping("retrieve/{writeTopic}/{uuid}")
+    public ResponseEntity<String> retrieveFromPost(@PathVariable String writeTopic,@PathVariable String uuid,@RequestBody KafkaPropertiesDTO kafkaProperties) {
+        Properties write_props = new Properties();
+        write_props.put("bootstrap.servers", kafkaProperties.getBootstrapServers());
+        write_props.put("security.protocol", kafkaProperties.getSecurityProtocol());
+        write_props.put("sasl.jaas.config", kafkaProperties.getSaslJaasConfig());
+        write_props.put("sasl.mechanism", kafkaProperties.getSaslMechanism());
+        write_props.put("group.id", kafkaProperties.getGroupId());
+        write_props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+        write_props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+
+        try {
+            // 构建存储服务的URL，这里你可以根据实际情况调整baseUrl
+            String baseUrl = kafkaProperties.getStorageServer(); // 确保KafkaPropertiesDTO中有getStorageServer()
+            String fullUrl = baseUrl + "/read/blob/" + uuid;
+
+            // 初始化HTTP连接并发送GET请求
+            URL url = new URL(fullUrl);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("GET");
+
+            // 读取响应内容
+            StringBuilder responseBuilder = new StringBuilder();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    responseBuilder.append(line);
+                }
+            }
+
+            // 获取BLOB数据
+            String blobData = responseBuilder.toString();
+
+            // 使用Kafka生产者发送BLOB数据到指定的主题
+            try (KafkaProducer<String, String> producer = new KafkaProducer<>(write_props)) {
+                producer.send(new ProducerRecord<>(writeTopic, uuid, blobData));
+            }
+
+            // 返回操作结果
+            return ResponseEntity.ok("BLOB data successfully retrieved and sent to Kafka topic: " + writeTopic);
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ResponseEntity.status(500).body("Error retrieving BLOB data or sending to Kafka: " + e.getMessage());
+        }
+    }
+
 
 
     public static class KafkaPropertiesDTO {
@@ -227,6 +363,7 @@ public class MyController {
         private String saslJaasConfig;
         private String saslMechanism;
         private String groupId;
+        private String storageServer;
 
         public String getBootstrapServers() {
             return bootstrapServers;
@@ -266,6 +403,17 @@ public class MyController {
 
         public void setGroupId(String groupId) {
             this.groupId = groupId;
+        }
+
+        public String getStorageServer() {
+            if (this.storageServer == null || this.storageServer.isEmpty()) {
+                return "https://acp-storage.azurewebsites.net";
+            }
+            return storageServer;
+        }
+
+        public void setStorageServer(String storageServer) {
+            this.storageServer = storageServer;
         }
     }
 
