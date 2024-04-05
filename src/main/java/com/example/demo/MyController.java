@@ -1,10 +1,16 @@
-package com.example.demo;
+package com.example.acp_submission_2;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.gson.Gson;
+import org.apache.kafka.clients.admin.AdminClient;
+import org.apache.kafka.clients.admin.ListTopicsResult;
 import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.common.KafkaException;
+import org.apache.kafka.common.errors.SaslAuthenticationException;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.apache.kafka.clients.producer.KafkaProducer;
@@ -12,168 +18,150 @@ import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.serialization.StringSerializer;
-import org.springframework.web.bind.annotation.*;
+import org.apache.kafka.common.errors.TimeoutException;
+
+import java.util.*;
+import java.util.concurrent.ExecutionException;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.util.Map;
-import java.util.Properties;
 import java.time.Duration;
-import java.util.Collections;
-import java.util.HashMap;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 
 @RestController
 public class MyController {
-
-    @GetMapping("/uuid")
-    public ResponseEntity<String> getStudentId_by_uuid() {
-        return ResponseEntity.ok("<h1>s2511180</h1>");
-    }
-
-    @GetMapping("/writeTopic/{topicName}/{data}")
-    public ResponseEntity<String> writeTopic(@PathVariable String topicName, @PathVariable String data) {
-        Properties props = new Properties();
-        props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "pkc-l6wr6.europe-west2.gcp.confluent.cloud:9092");
-        props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
-        props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
-        props.put("security.protocol", "SASL_SSL");
-        props.put("sasl.jaas.config", "org.apache.kafka.common.security.plain.PlainLoginModule required username='5GECTOGY2ARAL2WS' password='Az7Sjgz57SHqfGYwBA9vE1yfPRTt1iF51OvQcngAn9vok4vw62zF6WarZPQz78Wr';");
-        props.put("sasl.mechanism", "PLAIN");
-
-        try (KafkaProducer<String, String> producer = new KafkaProducer<>(props)) {
-            ProducerRecord<String, String> record = new ProducerRecord<>(topicName, data);
-            // 同步发送消息，并等待响应
-            RecordMetadata metadata = producer.send(record).get();
-            return ResponseEntity.ok(String.format("Message sent to topic %s partition %s with offset %s",
-                    metadata.topic(), metadata.partition(), metadata.offset()));
-        } catch (Exception e) {
-            // 处理发送消息时可能发生的异常
-            return ResponseEntity.status(500).body("Error sending message: " + e.getMessage());
-        }
-        // 确保生产者关闭，释放资源
-    }
-
-    @GetMapping("/readTopic/{topicName}")
-    public ResponseEntity<String> readTopic(@PathVariable String topicName) {
-        Properties props = new Properties();
-        // 添加您的Kafka配置属性
-        props.put("bootstrap.servers", "pkc-l6wr6.europe-west2.gcp.confluent.cloud:9092");
-        props.put("security.protocol", "SASL_SSL");
-        props.put("sasl.jaas.config", "org.apache.kafka.common.security.plain.PlainLoginModule required username='5GECTOGY2ARAL2WS' password='Az7Sjgz57SHqfGYwBA9vE1yfPRTt1iF51OvQcngAn9vok4vw62zF6WarZPQz78Wr';");
-        props.put("sasl.mechanism", "PLAIN");
-        props.put("group.id", "StockSymbolAnalyzer");
-        props.put("key.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
-        props.put("value.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
-
-        KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props);
-        consumer.subscribe(Collections.singletonList(topicName));
-
-        HashMap<String, Double> currentSymbolValueMap = new HashMap<>();
-        String[] symbols = {"AAPL", "MSFT", "GOOG", "AMZN", "TSLA"};
-        for (String symbol : symbols) {
-            currentSymbolValueMap.put(symbol, Double.NaN);
-        }
-
-        StringBuilder builder = new StringBuilder();
-        int iteration = 0;
-        try {
-            while (iteration < 100) {
-                ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(100));
-                for (ConsumerRecord<String, String> record : records) {
-                    if (currentSymbolValueMap.containsKey(record.key())) {
-                        currentSymbolValueMap.put(record.key(), Double.parseDouble(record.value()));
-                        builder.append(String.format("[%s] %s: %s %s %s %s%n",
-                                record.topic(), record.key(), record.value(),
-                                record.partition(), record.offset(), record.timestamp()));
-                    } else {
-                        builder.append(String.format("The key is: %s, value: %s %n",
-                                record.key(), record.value()));
-                    }
-                }
-                iteration++;
-            }
-        } finally {
-            consumer.close(); // 确保在退出循环时关闭消费者
-        }
-
-        return ResponseEntity.ok(builder.toString());
-    }
-
+    private static final Logger log = LoggerFactory.getLogger(MyController.class);
 
     @PostMapping("/readTopic/{topicName}")
     public ResponseEntity<String> readTopicFromPost(@PathVariable String topicName, @RequestBody KafkaPropertiesDTO kafkaProperties) {
-        Properties props = new Properties();
-        props.put("bootstrap.servers", kafkaProperties.getBootstrapServers());
-        props.put("security.protocol", kafkaProperties.getSecurityProtocol());
-        props.put("sasl.jaas.config", kafkaProperties.getSaslJaasConfig());
-        props.put("sasl.mechanism", kafkaProperties.getSaslMechanism());
-        props.put("group.id", kafkaProperties.getGroupId());
-        props.put("key.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
-        props.put("value.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
-
-        KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props);
-        consumer.subscribe(Collections.singletonList(topicName));
-
-//        HashMap<String, Double> currentSymbolValueMap = new HashMap<>();
-//        String[] symbols = {"AAPL", "MSFT", "GOOG", "AMZN", "TSLA", "s2511180"};
-//        for (String symbol : symbols) {
-//            currentSymbolValueMap.put(symbol, Double.NaN);
-//        }
-        StringBuilder builder = new StringBuilder();
-        ConsumerRecords<String, String> records = consumer.poll(Duration.ofSeconds(10));
-
-        for (ConsumerRecord<String, String> record : records) {
-            builder.append(String.format("[%s] Key: %s, Value: %s, partition: %s,offset: %s,timestamp: %s%n",
-                    record.topic(), record.key(), record.value(),
-                    record.partition(), record.offset(), record.timestamp()));
+        if (kafkaProperties.getBootstrapServers() == null ||
+                kafkaProperties.getSecurityProtocol() == null ||
+                kafkaProperties.getSaslMechanism() == null || kafkaProperties.getGroupId() ==null) {
+            return ResponseEntity.badRequest().body("Missing required fields in request body. We need:\n- bootstrap.servers\n- sasl.jaas.config\n- security.protocol \n- sasl.mechanism\n- group.id");
         }
+        if (!Objects.equals(kafkaProperties.getSecurityProtocol(), "SASL_SSL")){
+            return ResponseEntity.badRequest().body("Wrong security.protocol! It should be: 'SASL_SSL'!");
+        }
+        if (!Objects.equals(kafkaProperties.getSaslMechanism(), "PLAIN")){
+            return ResponseEntity.badRequest().body("Wrong sasl.mechanism! It should be: 'PLAIN'!");
+        }
+        try {
+            Properties props = new Properties();
+            props.put("bootstrap.servers", kafkaProperties.getBootstrapServers());
+            props.put("security.protocol", kafkaProperties.getSecurityProtocol());
+            props.put("sasl.jaas.config", kafkaProperties.getSaslJaasConfig());
+            props.put("sasl.mechanism", kafkaProperties.getSaslMechanism());
+            props.put("group.id", kafkaProperties.getGroupId());
+            props.put("auto.offset.reset", "latest");
+            props.put("key.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
+            props.put("value.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
+            try (AdminClient adminClient = AdminClient.create(props)) {
+                ListTopicsResult listTopics = adminClient.listTopics();
+                Set<String> topics = listTopics.names().get(); // 这个操作是阻塞的
 
-//        for (ConsumerRecord<String, String> record : records) {
-//            if (currentSymbolValueMap.containsKey(record.key())) {
-//                currentSymbolValueMap.put(record.key(), Double.parseDouble(record.value()));
-//                builder.append(String.format("[%s] %s: %s %s %s %s%n",
-//                        record.topic(), record.key(), record.value(),
-//                        record.partition(), record.offset(), record.timestamp()));
-//            } else {
-//                builder.append(String.format("[%s] %s: %s %s %s %s%n",
-//                        record.topic(), record.key(), record.value(),
-//                        record.partition(), record.offset(), record.timestamp()));
-//                    }
-//                }
-        consumer.close(); // 确保在退出循环时关闭消费者
+                if (!topics.contains(topicName)) {
+                    log.info("Topic does not exist: " + topicName);
+                    return ResponseEntity.badRequest().body("Topic does not exist: " + topicName);
+                }
+            } catch (InterruptedException | ExecutionException e) {
+                if (e.getCause() instanceof org.apache.kafka.common.errors.SaslAuthenticationException) {
+                    return ResponseEntity.badRequest().body("Authentication failed. Please check your credentials.");
+                }
+                Thread.currentThread().interrupt();
+                log.error("Failed to check if topic exists", e);
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Failed to check if topic exists: " + e.getMessage());
+            }
+            KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props);
+            consumer.subscribe(Collections.singletonList(topicName));
 
-        return ResponseEntity.ok(builder.toString());
+            StringBuilder builder = new StringBuilder();
+            ConsumerRecords<String, String> records = consumer.poll(Duration.ofSeconds(10));
+
+            for (ConsumerRecord<String, String> record : records) {
+                builder.append(String.format("[%s] Key: %s, Value: %s, partition: %s,offset: %s,timestamp: %s%n",
+                        record.topic(), record.key(), record.value(),
+                        record.partition(), record.offset(), record.timestamp()));
+            }
+            consumer.close();
+            return ResponseEntity.ok(builder.toString());
+        } catch (Exception e) {
+            log.error("Error while reading from Kafka topic", e);
+            return ResponseEntity.badRequest().body("Invalid request, please check: " + e.getMessage());
+        }
     }
 
     @PostMapping("/writeTopic/{topicName}/{data}")
     public ResponseEntity<String> writeTopicFromPost(@PathVariable String topicName, @PathVariable String data,@RequestBody KafkaPropertiesDTO kafkaProperties) {
+        if (kafkaProperties.getBootstrapServers() == null ||
+                kafkaProperties.getSecurityProtocol() == null ||
+                kafkaProperties.getSaslMechanism() == null) {
+            return ResponseEntity.badRequest().body("Missing required fields in request body. We need:\n- bootstrap.servers\n- sasl.jaas.config\n- security.protocol \n- sasl.mechanism");
+        }
+        if (!Objects.equals(kafkaProperties.getSecurityProtocol(), "SASL_SSL")){
+            return ResponseEntity.badRequest().body("Wrong security.protocol! It should be: 'SASL_SSL'!");
+        }
+        if (!Objects.equals(kafkaProperties.getSaslMechanism(), "PLAIN")){
+            return ResponseEntity.badRequest().body("Wrong sasl.mechanism! It should be: 'PLAIN'!");
+        }
         Properties props = new Properties();
         props.put("bootstrap.servers", kafkaProperties.getBootstrapServers());
         props.put("security.protocol", kafkaProperties.getSecurityProtocol());
         props.put("sasl.jaas.config", kafkaProperties.getSaslJaasConfig());
         props.put("sasl.mechanism", kafkaProperties.getSaslMechanism());
-        props.put("group.id", kafkaProperties.getGroupId());
         props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
         props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+        try (AdminClient adminClient = AdminClient.create(props)) {
+            ListTopicsResult listTopics = adminClient.listTopics();
+            Set<String> topics = listTopics.names().get();
+
+            if (!topics.contains(topicName)) {
+                log.info("Topic does not exist: " + topicName);
+                return ResponseEntity.badRequest().body("Topic does not exist: " + topicName);
+            }
+        } catch (InterruptedException | ExecutionException e) {
+            if (e.getCause() instanceof org.apache.kafka.common.errors.SaslAuthenticationException) {
+                return ResponseEntity.badRequest().body("Authentication failed. Please check your credentials.");
+            }
+            Thread.currentThread().interrupt();
+            log.error("Failed to check if topic exists", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Failed to check if topic exists: " + e.getMessage());
+        }catch (Exception e) {
+            log.error("Error while reading from Kafka topic", e);
+            return ResponseEntity.badRequest().body("Invalid request, please check: " + e.getMessage());
+        }
 
         try (KafkaProducer<String, String> producer = new KafkaProducer<>(props)) {
             ProducerRecord<String, String> record = new ProducerRecord<>(topicName,"s2511180",data);
             // 同步发送消息，并等待响应
             RecordMetadata metadata = producer.send(record).get();
+            producer.close();
             return ResponseEntity.ok(String.format("Message sent to topic %s: partition: %s with offset: %s",
                     metadata.topic(), metadata.partition(), metadata.offset()));
         } catch (Exception e) {
-            // 处理发送消息时可能发生的异常
-            return ResponseEntity.status(500).body("Error sending message: " + e.getMessage());
+            log.error("Error while reading from Kafka topic", e);
+            return ResponseEntity.badRequest().body("Invalid request, please check: " + e.getMessage());
         }
     }
 
     @PostMapping("transformMessage/{readTopic}/{writeTopic}")
     public ResponseEntity<String> transformMessageFromPost(@PathVariable String readTopic, @PathVariable String writeTopic,@RequestBody KafkaPropertiesDTO kafkaProperties) {
+        if (kafkaProperties.getBootstrapServers() == null ||
+                kafkaProperties.getSecurityProtocol() == null ||
+                kafkaProperties.getSaslMechanism() == null || kafkaProperties.getGroupId() ==null) {
+            return ResponseEntity.badRequest().body("Missing required fields in request body. We need:\n- bootstrap.servers\n- sasl.jaas.config\n- security.protocol \n- sasl.mechanism\n- group.id");
+        }
+        if (!Objects.equals(kafkaProperties.getSecurityProtocol(), "SASL_SSL")){
+            return ResponseEntity.badRequest().body("Wrong security.protocol! It should be: 'SASL_SSL'!");
+        }
+        if (!Objects.equals(kafkaProperties.getSaslMechanism(), "PLAIN")){
+            return ResponseEntity.badRequest().body("Wrong sasl.mechanism! It should be: 'PLAIN'!");
+        }
         Properties read_props = new Properties();
         read_props.put("bootstrap.servers", kafkaProperties.getBootstrapServers());
         read_props.put("security.protocol", kafkaProperties.getSecurityProtocol());
@@ -193,6 +181,25 @@ public class MyController {
         write_props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
         StringBuilder responseBuilder = new StringBuilder();
 
+        try (AdminClient adminClient = AdminClient.create(read_props)) {
+            ListTopicsResult listTopics = adminClient.listTopics();
+            Set<String> topics = listTopics.names().get();
+
+            if (!topics.contains(readTopic) ||!topics.contains(writeTopic)) {
+                log.info("Topic does not exist " );
+                return ResponseEntity.badRequest().body("Topic does not exist ");
+            }
+        } catch (InterruptedException | ExecutionException e) {
+            if (e.getCause() instanceof org.apache.kafka.common.errors.SaslAuthenticationException) {
+                return ResponseEntity.badRequest().body("Authentication failed. Please check your credentials.");
+            }
+            Thread.currentThread().interrupt();
+            log.error("Failed to check if topic exists", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Failed to check if topic exists: " + e.getMessage());
+        }catch (Exception e) {
+            log.error("Error while reading from Kafka topic", e);
+            return ResponseEntity.badRequest().body("Invalid request, please check: " + e.getMessage());
+        }
         // 创建消费者
         try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(read_props)) {
             consumer.subscribe(Collections.singletonList(readTopic));
@@ -205,29 +212,37 @@ public class MyController {
                     return ResponseEntity.ok("No messages to transform from " + readTopic);
                 }
                 records.forEach(record -> {
-                    // 转换数据为大写
                     String originalData = record.value();
                     String transformedData = originalData.toUpperCase();
-                    // 写入到writeTopic
                     producer.send(new ProducerRecord<>(writeTopic, transformedData));
-
-                    // 添加转换详情到响应构建器
                     responseBuilder.append(String.format("Value %s from readTopic: %s has transformed into %s to writeTopic: %s.%n",
                             originalData, readTopic, transformedData, writeTopic));
                 });
 
-                // 返回所有转换的详情
                 return ResponseEntity.ok(responseBuilder.toString());
-            } // 自动关闭生产者
+            }
+        } catch (TimeoutException e) {
+            log.error("Timeout while attempting to communicate with Kafka cluster", e);
+            return ResponseEntity.badRequest().body("Timeout while attempting to communicate with Kafka cluster: " + e.getMessage());
         } catch (Exception e) {
-            // 异常处理
-            return ResponseEntity.status(500).body("Error during message transformation: " + e.getMessage());
+            log.error("Error while reading from Kafka topic", e);
+            return ResponseEntity.badRequest().body("Invalid request, please check: " + e.getMessage());
         }
-
-}
+    }
 
     @PostMapping("store/{readTopic}/{writeTopic}")
     public ResponseEntity<String> storeFromPost(@PathVariable String readTopic, @PathVariable String writeTopic,@RequestBody KafkaPropertiesDTO kafkaProperties) {
+        if (kafkaProperties.getBootstrapServers() == null ||
+                kafkaProperties.getSecurityProtocol() == null ||
+                kafkaProperties.getSaslMechanism() == null || kafkaProperties.getGroupId() == null) {
+            return ResponseEntity.badRequest().body("Missing required fields in request body. We need:\n- bootstrap.servers\n- sasl.jaas.config\n- security.protocol \n- sasl.mechanism\n- group.id (StorageServer has initial value)");
+        }
+        if (!Objects.equals(kafkaProperties.getSecurityProtocol(), "SASL_SSL")){
+            return ResponseEntity.badRequest().body("Wrong security.protocol! It should be: 'SASL_SSL'!");
+        }
+        if (!Objects.equals(kafkaProperties.getSaslMechanism(), "PLAIN")){
+            return ResponseEntity.badRequest().body("Wrong sasl.mechanism! It should be: 'PLAIN'!");
+        }
         Properties read_props = new Properties();
         read_props.put("bootstrap.servers", kafkaProperties.getBootstrapServers());
         read_props.put("security.protocol", kafkaProperties.getSecurityProtocol());
@@ -242,10 +257,29 @@ public class MyController {
         write_props.put("security.protocol", kafkaProperties.getSecurityProtocol());
         write_props.put("sasl.jaas.config", kafkaProperties.getSaslJaasConfig());
         write_props.put("sasl.mechanism", kafkaProperties.getSaslMechanism());
-        write_props.put("group.id", kafkaProperties.getGroupId());
         write_props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
         write_props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
         StringBuilder responseBuilder = new StringBuilder();
+
+        try (AdminClient adminClient = AdminClient.create(read_props)) {
+            ListTopicsResult listTopics = adminClient.listTopics();
+            Set<String> topics = listTopics.names().get();
+
+            if (!topics.contains(readTopic) ||!topics.contains(writeTopic)) {
+                log.info("Topic does not exist " );
+                return ResponseEntity.badRequest().body("Topic does not exist ");
+            }
+        } catch (InterruptedException | ExecutionException e) {
+            if (e.getCause() instanceof org.apache.kafka.common.errors.SaslAuthenticationException) {
+                return ResponseEntity.badRequest().body("Authentication failed. Please check your credentials.");
+            }
+            Thread.currentThread().interrupt();
+            log.error("Failed to check if topic exists", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Failed to check if topic exists: " + e.getMessage());
+        }catch (Exception e) {
+            log.error("Error while reading from Kafka topic", e);
+            return ResponseEntity.badRequest().body("Invalid request, please check: " + e.getMessage());
+        }
 
         // 创建消费者
         try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(read_props)) {
@@ -304,25 +338,56 @@ public class MyController {
                 return ResponseEntity.ok("Data processed and stored.");
             }
         } catch (Exception e) {
-            return ResponseEntity.status(500).body("Error during data processing: " + e.getMessage());
+            log.error("Error while reading from Kafka topic", e);
+            return ResponseEntity.badRequest().body("Invalid request, please check: " + e.getMessage());
         }
 
     }
 
     @PostMapping("retrieve/{writeTopic}/{uuid}")
     public ResponseEntity<String> retrieveFromPost(@PathVariable String writeTopic,@PathVariable String uuid,@RequestBody KafkaPropertiesDTO kafkaProperties) {
+        if (kafkaProperties.getBootstrapServers() == null ||
+                kafkaProperties.getSecurityProtocol() == null ||
+                kafkaProperties.getSaslMechanism() == null) {
+            return ResponseEntity.badRequest().body("Missing required fields in request body. We need:\n- bootstrap.servers\n- sasl.jaas.config\n- security.protocol \n- sasl.mechanism");
+        }
+        if (!Objects.equals(kafkaProperties.getSecurityProtocol(), "SASL_SSL")){
+            return ResponseEntity.badRequest().body("Wrong security.protocol! It should be: 'SASL_SSL'!");
+        }
+        if (!Objects.equals(kafkaProperties.getSaslMechanism(), "PLAIN")){
+            return ResponseEntity.badRequest().body("Wrong sasl.mechanism! It should be: 'PLAIN'!");
+        }
         Properties write_props = new Properties();
         write_props.put("bootstrap.servers", kafkaProperties.getBootstrapServers());
         write_props.put("security.protocol", kafkaProperties.getSecurityProtocol());
         write_props.put("sasl.jaas.config", kafkaProperties.getSaslJaasConfig());
         write_props.put("sasl.mechanism", kafkaProperties.getSaslMechanism());
-        write_props.put("group.id", kafkaProperties.getGroupId());
         write_props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
         write_props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
 
+        try (AdminClient adminClient = AdminClient.create(write_props)) {
+            ListTopicsResult listTopics = adminClient.listTopics();
+            Set<String> topics = listTopics.names().get(); // 这个操作是阻塞的
+
+            if (!topics.contains(writeTopic)) {
+                log.info("Topic does not exist: " + writeTopic);
+                return ResponseEntity.badRequest().body("Topic does not exist: " + writeTopic);
+            }
+        } catch (InterruptedException | ExecutionException e) {
+            if (e.getCause() instanceof org.apache.kafka.common.errors.SaslAuthenticationException) {
+                return ResponseEntity.badRequest().body("Authentication failed. Please check your credentials.");
+            }
+            Thread.currentThread().interrupt();
+            log.error("Failed to check if topic exists", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Failed to check if topic exists: " + e.getMessage());
+        }catch (Exception e) {
+            log.error("Error while reading from Kafka topic", e);
+            return ResponseEntity.badRequest().body("Invalid request, please check: " + e.getMessage());
+        }
+
         try {
             // 构建存储服务的URL，这里你可以根据实际情况调整baseUrl
-            String baseUrl = kafkaProperties.getStorageServer(); // 确保KafkaPropertiesDTO中有getStorageServer()
+            String baseUrl = kafkaProperties.getStorageServer();
             String fullUrl = baseUrl + "/read/blob/" + uuid;
 
             // 初始化HTTP连接并发送GET请求
@@ -344,25 +409,35 @@ public class MyController {
 
             // 使用Kafka生产者发送BLOB数据到指定的主题
             try (KafkaProducer<String, String> producer = new KafkaProducer<>(write_props)) {
-                producer.send(new ProducerRecord<>(writeTopic, uuid, blobData));
+                producer.send(new ProducerRecord<>(writeTopic, "s2511180", blobData));
             }
 
             // 返回操作结果
             return ResponseEntity.ok("BLOB data successfully retrieved and sent to Kafka topic: " + writeTopic);
         } catch (Exception e) {
-            e.printStackTrace();
-            return ResponseEntity.status(500).body("Error retrieving BLOB data or sending to Kafka: " + e.getMessage());
+            log.error("Error while reading from Kafka topic", e);
+            return ResponseEntity.badRequest().body("Invalid request, please check: " + e.getMessage());
         }
     }
 
 
-
     public static class KafkaPropertiesDTO {
+        @JsonProperty("bootstrap.servers")
         private String bootstrapServers;
-        private String securityProtocol;
+
+        @JsonProperty("sasl.jaas.config")
         private String saslJaasConfig;
+
+        @JsonProperty("security.protocol")
+        private String securityProtocol;
+
+        @JsonProperty("sasl.mechanism")
         private String saslMechanism;
+
+        @JsonProperty("group.id")
         private String groupId;
+
+        @JsonProperty("storage.server")
         private String storageServer;
 
         public String getBootstrapServers() {
@@ -416,6 +491,5 @@ public class MyController {
             this.storageServer = storageServer;
         }
     }
-
 
 }
